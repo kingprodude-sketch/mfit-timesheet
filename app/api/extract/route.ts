@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Groq from 'groq-sdk'
+import { fromBuffer } from 'pdf2pic'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -26,6 +27,17 @@ Return ONLY valid JSON, no markdown, no explanation:
 }
 Include all 31 rows (days 21-31 then 01-20). Empty string for blank cells. isSunday true for Sunday rows.`
 
+async function pdfToBase64Image(buffer: Buffer): Promise<string> {
+  const converter = fromBuffer(buffer, {
+    density: 300,
+    format: 'jpeg',
+    width: 2480,
+    height: 3508,
+  })
+  const result = await converter(1, { responseType: 'base64' })
+  return result.base64 as string
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
@@ -33,8 +45,19 @@ export async function POST(req: NextRequest) {
     if (!file) return NextResponse.json({ error: 'No file uploaded' }, { status: 400 })
 
     const arrayBuffer = await file.arrayBuffer()
-    const base64 = Buffer.from(arrayBuffer).toString('base64')
-    const mimeType = file.type || 'image/jpeg'
+    const buffer = Buffer.from(arrayBuffer)
+
+    let base64Image: string
+    let mimeType = 'image/jpeg'
+
+    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+      // Auto-convert PDF to JPG
+      base64Image = await pdfToBase64Image(buffer)
+    } else {
+      // Already an image
+      base64Image = buffer.toString('base64')
+      mimeType = file.type || 'image/jpeg'
+    }
 
     const response = await client.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -45,7 +68,7 @@ export async function POST(req: NextRequest) {
           content: [
             {
               type: 'image_url',
-              image_url: { url: `data:${mimeType};base64,${base64}` }
+              image_url: { url: `data:${mimeType};base64,${base64Image}` }
             },
             { type: 'text', text: EXTRACTION_PROMPT }
           ]
