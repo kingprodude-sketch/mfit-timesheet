@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Groq from 'groq-sdk'
-import { fromBuffer } from 'pdf2pic'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -27,15 +26,26 @@ Return ONLY valid JSON, no markdown, no explanation:
 }
 Include all 31 rows (days 21-31 then 01-20). Empty string for blank cells. isSunday true for Sunday rows.`
 
-async function pdfToBase64Image(buffer: Buffer): Promise<string> {
-  const converter = fromBuffer(buffer, {
-    density: 300,
-    format: 'jpeg',
-    width: 2480,
-    height: 3508,
-  })
-  const result = await converter(1, { responseType: 'base64' })
-  return result.base64 as string
+async function pdfToJpegBase64(buffer: Buffer): Promise<string> {
+  const { createCanvas } = await import('canvas')
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs' as any)
+
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) })
+  const pdf = await loadingTask.promise
+  const page = await pdf.getPage(1)
+
+  const scale = 3.0
+  const viewport = page.getViewport({ scale })
+
+  const canvas = createCanvas(viewport.width, viewport.height)
+  const context = canvas.getContext('2d')
+
+  await page.render({
+    canvasContext: context as any,
+    viewport
+  }).promise
+
+  return canvas.toDataURL('image/jpeg', 0.95).split(',')[1]
 }
 
 export async function POST(req: NextRequest) {
@@ -50,11 +60,9 @@ export async function POST(req: NextRequest) {
     let base64Image: string
     let mimeType = 'image/jpeg'
 
-    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      // Auto-convert PDF to JPG
-      base64Image = await pdfToBase64Image(buffer)
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      base64Image = await pdfToJpegBase64(buffer)
     } else {
-      // Already an image
       base64Image = buffer.toString('base64')
       mimeType = file.type || 'image/jpeg'
     }
