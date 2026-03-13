@@ -6,13 +6,14 @@ export const maxDuration = 60
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-const EXTRACTION_PROMPT = `You are extracting data from a handwritten MFIT Interior Decoration LLC Job Time Sheet. Extract ALL data and return ONLY valid JSON in this exact format (no markdown, no explanation):
+const EXTRACTION_PROMPT = `You are extracting data from a handwritten MFIT Interior Decoration LLC Job Time Sheet image. Read every handwritten value carefully including times, numbers and fractions like 3½.
+
+Return ONLY valid JSON, no markdown, no explanation:
 {
   "meta": { "name": "", "idNo": "", "tradeName": "", "monthYear": "", "totalNT": "", "totalOT": "" },
   "rows": [
     {
-      "day": "21",
-      "inTime": "", "outTime": "",
+      "day": "21", "inTime": "", "outTime": "",
       "jobs": {
         "953B": { "nt": "", "ot": "" },
         "956": { "nt": "", "ot": "" },
@@ -22,7 +23,8 @@ const EXTRACTION_PROMPT = `You are extracting data from a handwritten MFIT Inter
       "totalNT": "", "totalOT": "", "remarks": "", "isSunday": false
     }
   ]
-}`
+}
+Include all 31 rows (days 21-31 then 01-20). Empty string for blank cells. isSunday true for Sunday rows.`
 
 export async function POST(req: NextRequest) {
   try {
@@ -32,6 +34,7 @@ export async function POST(req: NextRequest) {
 
     const arrayBuffer = await file.arrayBuffer()
     const base64 = Buffer.from(arrayBuffer).toString('base64')
+    const mimeType = file.type || 'image/jpeg'
 
     const response = await client.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -42,18 +45,13 @@ export async function POST(req: NextRequest) {
           content: [
             {
               type: 'image_url',
-              image_url: {
-                url: `data:application/pdf;base64,${base64}`
-              }
+              image_url: { url: `data:${mimeType};base64,${base64}` }
             },
-            {
-              type: 'text',
-              text: EXTRACTION_PROMPT
-            }
+            { type: 'text', text: EXTRACTION_PROMPT }
           ]
         }
       ]
-    })
+    } as any)
 
     const text = response.choices[0]?.message?.content || ''
     const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()

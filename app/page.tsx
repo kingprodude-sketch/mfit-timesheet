@@ -32,7 +32,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFile = (f: File) => {
-    if (!f.type.includes('pdf')) return
+    // accept all return
     setFile(f)
     const url = URL.createObjectURL(f)
     setPreview(url)
@@ -129,7 +129,7 @@ export default function Home() {
             onDragLeave={onDragLeave}
             onClick={() => fileInputRef.current?.click()}
           >
-            <input ref={fileInputRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
+            <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display: 'none' }} onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
             <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" style={{ margin: '0 auto 1rem', display: 'block', opacity: 0.7 }}>
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
               <polyline points="14 2 14 8 20 8"/>
