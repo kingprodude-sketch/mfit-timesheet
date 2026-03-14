@@ -6,7 +6,7 @@ export const maxDuration = 60
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-const EXTRACTION_PROMPT = `You are extracting data from a handwritten MFIT Interior Decoration LLC Job Time Sheet image. Read every handwritten value carefully including times, numbers and fractions like 3½.
+const EXTRACTION_PROMPT = `You are extracting data from a handwritten MFIT Interior Decoration LLC Job Time Sheet image. Read every handwritten value carefully including times, numbers and fractions like 3.5 or 3½.
 
 Return ONLY valid JSON, no markdown, no explanation:
 {
@@ -28,18 +28,15 @@ Include all 31 rows (days 21-31 then 01-20). Empty string for blank cells. isSun
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData()
-    const imageData = formData.get('image') as string | null
-    const mimeType = (formData.get('mimeType') as string) || 'image/jpeg'
+    const body = await req.json()
+    const { imageUrl } = body
 
-    console.log('Received request - mimeType:', mimeType)
-    console.log('Image data length:', imageData?.length ?? 0)
-
-    if (!imageData || imageData.length < 100) {
-      return NextResponse.json({ error: 'No valid image data received. PDF.js may not have loaded yet — please wait 3 seconds and try again.' }, { status: 400 })
+    if (!imageUrl || !imageUrl.startsWith('data:')) {
+      return NextResponse.json({ error: 'No valid image received. Please wait a moment for PDF.js to load and try again.' }, { status: 400 })
     }
 
-    console.log('Sending to Groq...')
+    console.log('Image URL length:', imageUrl.length)
+    console.log('Image type:', imageUrl.substring(0, 30))
 
     const response = await client.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -50,7 +47,7 @@ export async function POST(req: NextRequest) {
           content: [
             {
               type: 'image_url',
-              image_url: { url: `data:${mimeType};base64,${imageData}` }
+              image_url: { url: imageUrl }
             },
             { type: 'text', text: EXTRACTION_PROMPT }
           ]
@@ -65,7 +62,7 @@ export async function POST(req: NextRequest) {
     const data = JSON.parse(clean)
     return NextResponse.json(data)
   } catch (err: any) {
-    console.error('Extraction error full:', err)
+    console.error('Extraction error:', err.message)
     return NextResponse.json({ error: err.message || 'Extraction failed' }, { status: 500 })
   }
 }

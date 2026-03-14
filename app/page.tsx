@@ -19,16 +19,17 @@ export default function Home() {
   const [rows, setRows] = useState<RowData[]>(defaultData())
   const [meta, setMeta] = useState({ name: '', idNo: '', tradeName: '', monthYear: '', totalNT: '', totalOT: '' })
   const [dragging, setDragging] = useState(false)
+  const [pdfReady, setPdfReady] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    // Load PDF.js from CDN
-    if ((window as any).pdfjsLib) return
+    if ((window as any).pdfjsLib) { setPdfReady(true); return }
     const script = document.createElement('script')
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
     script.onload = () => {
-      (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+      ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
         'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+      setPdfReady(true)
     }
     document.head.appendChild(script)
   }, [])
@@ -39,29 +40,29 @@ export default function Home() {
     const f = e.dataTransfer.files[0]; if (f) handleFile(f)
   }, [])
 
-  const convertToImage = async (f: File): Promise<{ base64: string; mimeType: string }> => {
-    if (!f.type.includes('pdf') && !f.name.toLowerCase().endsWith('.pdf')) {
-      const buf = await f.arrayBuffer()
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)))
-      return { base64, mimeType: f.type || 'image/jpeg' }
+  const convertToDataUrl = async (f: File): Promise<string> => {
+    const isPdf = f.type.includes('pdf') || f.name.toLowerCase().endsWith('.pdf')
+    if (!isPdf) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = e => resolve(e.target?.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(f)
+      })
     }
 
+    if (!pdfReady) throw new Error('PDF.js still loading, please try again in 3 seconds')
     const pdfjsLib = (window as any).pdfjsLib
-    if (!pdfjsLib) throw new Error('PDF.js still loading, please try again in a moment')
-
     const arrayBuffer = await f.arrayBuffer()
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
     const page = await pdf.getPage(1)
-    const viewport = page.getViewport({ scale: 3.0 })
-
+    const viewport = page.getViewport({ scale: 2.5 })
     const canvas = document.createElement('canvas')
     canvas.width = viewport.width
     canvas.height = viewport.height
     const ctx = canvas.getContext('2d')!
     await page.render({ canvasContext: ctx, viewport }).promise
-
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.95)
-    return { base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' }
+    return canvas.toDataURL('image/jpeg', 0.92)
   }
 
   const extractData = async () => {
@@ -69,14 +70,15 @@ export default function Home() {
     setStatus('processing')
     try {
       setStatusMsg('Converting PDF to image...')
-      const { base64, mimeType } = await convertToImage(file)
+      const imageUrl = await convertToDataUrl(file)
+      console.log('Image URL length:', imageUrl.length, 'starts with:', imageUrl.substring(0, 40))
 
       setStatusMsg('AI reading handwriting...')
-      const formData = new FormData()
-      formData.append('image', base64)
-      formData.append('mimeType', mimeType)
-
-      const res = await fetch('/api/extract', { method: 'POST', body: formData })
+      const res = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl })
+      })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Failed')
       setRows(json.rows || defaultData())
@@ -115,8 +117,8 @@ export default function Home() {
     }))
   }
 
-  const cell: React.CSSProperties = { border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'center' as const }
-  const inp: React.CSSProperties = { background: 'transparent', border: 'none', outline: 'none', width: '100%', textAlign: 'center' as const, fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'inherit' }
+  const cell: React.CSSProperties = { border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'center' }
+  const inp: React.CSSProperties = { background: 'transparent', border: 'none', outline: 'none', width: '100%', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'inherit' }
 
   return (
     <main style={{ minHeight: '100vh', padding: '2rem', maxWidth: 1400, margin: '0 auto' }}>
@@ -131,10 +133,9 @@ export default function Home() {
       </header>
 
       <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: '2rem', alignItems: 'start' }}>
-        {/* Left panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div
-            style={{ padding: '2rem 1.5rem', textAlign: 'center' as const, cursor: 'pointer', background: 'var(--surface)', border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 4 }}
+            style={{ padding: '2rem 1.5rem', textAlign: 'center', cursor: 'pointer', background: 'var(--surface)', border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 4 }}
             onDrop={onDrop} onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)}
             onClick={() => fileInputRef.current?.click()}
           >
@@ -152,6 +153,8 @@ export default function Home() {
               </>
             )}
           </div>
+
+          {!pdfReady && <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--accent)', textAlign: 'center' }}>⏳ Loading PDF engine...</p>}
 
           <button onClick={extractData} disabled={!file || status === 'processing'}
             style={{ padding: '0.85rem', background: 'var(--accent)', color: '#000', fontWeight: 800, fontSize: '0.85rem', letterSpacing: '0.1em', border: 'none', cursor: file ? 'pointer' : 'not-allowed', opacity: file ? 1 : 0.5, borderRadius: 2 }}>
@@ -175,15 +178,15 @@ export default function Home() {
             <p style={{ fontWeight: 700, fontSize: '0.65rem', letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: 'var(--text-dim)', marginBottom: '0.25rem' }}>Document Info</p>
             {[['NAME', 'name'], ['ID NO', 'idNo'], ['TRADE', 'tradeName'], ['MONTH/YEAR', 'monthYear']].map(([label, key]) => (
               <div key={key}>
-                <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', letterSpacing: '0.08em', color: 'var(--text-dim)', display: 'block', marginBottom: '0.15rem' }}>{label}</label>
+                <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'var(--text-dim)', display: 'block', marginBottom: '0.15rem' }}>{label}</label>
                 <input value={meta[key as keyof typeof meta]} onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
                   style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', padding: '0.35rem 0.5rem', outline: 'none', borderRadius: 2, boxSizing: 'border-box' as const }} />
               </div>
             ))}
-            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
               {[['TOTAL NT', 'totalNT'], ['TOTAL OT', 'totalOT']].map(([label, key]) => (
                 <div key={key} style={{ flex: 1 }}>
-                  <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', letterSpacing: '0.08em', color: 'var(--text-dim)', display: 'block', marginBottom: '0.15rem' }}>{label}</label>
+                  <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'var(--text-dim)', display: 'block', marginBottom: '0.15rem' }}>{label}</label>
                   <input value={meta[key as keyof typeof meta]} onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
                     style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--accent)', fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: '1rem', padding: '0.35rem 0.5rem', outline: 'none', borderRadius: 2, textAlign: 'center' as const, boxSizing: 'border-box' as const }} />
                 </div>
@@ -192,7 +195,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Table */}
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
           <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontWeight: 700, fontSize: '0.8rem', letterSpacing: '0.08em', textTransform: 'uppercase' as const }}>Timesheet Data</span>
