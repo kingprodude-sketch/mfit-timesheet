@@ -25,10 +25,10 @@ export default function Home() {
   useEffect(() => {
     if ((window as any).pdfjsLib) { setPdfReady(true); return }
     const script = document.createElement('script')
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+    script.src = '/pdf.worker.js'
     script.onload = () => {
       ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+        '/pdf.worker.min.js'
       setPdfReady(true)
     }
     document.head.appendChild(script)

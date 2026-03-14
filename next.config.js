@@ -1,10 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ['canvas', 'pdfjs-dist', 'xlsx']
+    serverComponentsExternalPackages: ['xlsx']
   },
   webpack: (config) => {
-    config.resolve.alias.canvas = false
+    config.resolve.alias['pdfjs-dist'] = 'pdfjs-dist/legacy/build/pdf.js'
     return config
   }
 }
