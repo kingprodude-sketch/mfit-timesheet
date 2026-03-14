@@ -26,46 +26,20 @@ Return ONLY valid JSON, no markdown, no explanation:
 }
 Include all 31 rows (days 21-31 then 01-20). Empty string for blank cells. isSunday true for Sunday rows.`
 
-async function pdfToJpegBase64(buffer: Buffer): Promise<string> {
-  const { createCanvas } = await import('canvas')
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs' as any)
-
-  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) })
-  const pdf = await loadingTask.promise
-  const page = await pdf.getPage(1)
-
-  const scale = 3.0
-  const viewport = page.getViewport({ scale })
-
-  const canvas = createCanvas(viewport.width, viewport.height)
-  const context = canvas.getContext('2d')
-
-  await page.render({
-    canvasContext: context as any,
-    viewport
-  }).promise
-
-  return canvas.toDataURL('image/jpeg', 0.95).split(',')[1]
-}
-
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
-    const file = formData.get('pdf') as File | null
-    if (!file) return NextResponse.json({ error: 'No file uploaded' }, { status: 400 })
+    const imageData = formData.get('image') as string | null
+    const mimeType = (formData.get('mimeType') as string) || 'image/jpeg'
 
-    const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
+    console.log('Received request - mimeType:', mimeType)
+    console.log('Image data length:', imageData?.length ?? 0)
 
-    let base64Image: string
-    let mimeType = 'image/jpeg'
-
-    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-      base64Image = await pdfToJpegBase64(buffer)
-    } else {
-      base64Image = buffer.toString('base64')
-      mimeType = file.type || 'image/jpeg'
+    if (!imageData || imageData.length < 100) {
+      return NextResponse.json({ error: 'No valid image data received. PDF.js may not have loaded yet — please wait 3 seconds and try again.' }, { status: 400 })
     }
+
+    console.log('Sending to Groq...')
 
     const response = await client.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -76,7 +50,7 @@ export async function POST(req: NextRequest) {
           content: [
             {
               type: 'image_url',
-              image_url: { url: `data:${mimeType};base64,${base64Image}` }
+              image_url: { url: `data:${mimeType};base64,${imageData}` }
             },
             { type: 'text', text: EXTRACTION_PROMPT }
           ]
@@ -85,11 +59,13 @@ export async function POST(req: NextRequest) {
     } as any)
 
     const text = response.choices[0]?.message?.content || ''
+    console.log('Groq response length:', text.length)
+
     const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
     const data = JSON.parse(clean)
     return NextResponse.json(data)
   } catch (err: any) {
-    console.error('Extraction error:', err)
+    console.error('Extraction error full:', err)
     return NextResponse.json({ error: err.message || 'Extraction failed' }, { status: 500 })
   }
 }
