@@ -5,54 +5,51 @@ export const runtime = 'nodejs'
 
 export async function POST(req: NextRequest) {
   try {
-    const { rows, meta, jobCols } = await req.json()
-    const cols: string[] = jobCols || ['953B','956','935','959']
-
+    const { pages, meta } = await req.json()
     const wb = XLSX.utils.book_new()
 
-    // Header rows
-    const headerData = [
-      ['MFIT INTERIOR DECORATION LLC'],
-      ['JOB TIME SHEET'],
-      ['Name:', meta.name, '', 'ID No:', meta.idNo, '', 'Trade:', meta.tradeName, '', 'Month/Year:', meta.monthYear],
-      [],
-    ]
+    pages.forEach((page: any, pi: number) => {
+      const cols: string[] = page.jobColumns || []
+      const hasInOut: boolean = page.hasInOut !== false
 
-    // Table header
-    const colHeaders = ['DAY', 'IN TIME', 'OUT TIME']
-    cols.forEach(c => { colHeaders.push(`${c} NT`); colHeaders.push(`${c} OT`) })
-    colHeaders.push('TOTAL NT', 'TOTAL OT', 'REMARKS')
-    headerData.push(colHeaders as any)
+      const headerData: any[][] = [
+        ['MFIT INTERIOR DECORATION LLC'],
+        ['JOB TIME SHEET'],
+        ['Name:', meta.name, 'ID No:', meta.idNo, 'Trade:', meta.tradeName, 'Month/Year:', meta.monthYear],
+        [`Page ${pi + 1} — Jobs: ${cols.join(', ')}`],
+        []
+      ]
 
-    // Data rows
-    const dataRows = rows.map((r: any) => {
-      const row: any[] = [r.day, r.inTime, r.outTime]
-      cols.forEach(c => {
-        row.push(r.jobs?.[c]?.nt || '')
-        row.push(r.jobs?.[c]?.ot || '')
+      // Table header
+      const colHeaders: string[] = ['DAY']
+      if (hasInOut) { colHeaders.push('IN TIME', 'OUT TIME') }
+      cols.forEach(c => { colHeaders.push(`${c} NT`, `${c} OT`) })
+      colHeaders.push('TOTAL NT', 'TOTAL OT')
+      headerData.push(colHeaders)
+
+      // Data rows
+      const dataRows = page.rows.map((r: any) => {
+        const row: any[] = [r.day]
+        if (hasInOut) { row.push(r.inTime || '', r.outTime || '') }
+        cols.forEach(c => { row.push(r.jobs?.[c]?.nt || '', r.jobs?.[c]?.ot || '') })
+        row.push(r.totalNT || '', r.totalOT || '')
+        return row
       })
-      row.push(r.totalNT, r.totalOT, r.remarks)
-      return row
+
+      const allData = [...headerData, ...dataRows]
+      const ws = XLSX.utils.aoa_to_sheet(allData)
+
+      // Column widths
+      const widths: any[] = [{ wch: 6 }]
+      if (hasInOut) { widths.push({ wch: 10 }, { wch: 10 }) }
+      cols.forEach(() => { widths.push({ wch: 8 }, { wch: 8 }) })
+      widths.push({ wch: 10 }, { wch: 10 })
+      ws['!cols'] = widths
+
+      XLSX.utils.book_append_sheet(wb, ws, `Page ${pi + 1}`)
     })
 
-    // Totals row
-    const totalsRow: any[] = ['TOTAL', '', '']
-    cols.forEach(() => { totalsRow.push('', '') })
-    totalsRow.push(meta.totalNT, meta.totalOT, '')
-
-    const allData = [...headerData, ...dataRows, [], totalsRow]
-    const ws = XLSX.utils.aoa_to_sheet(allData)
-
-    // Column widths
-    ws['!cols'] = [
-      { wch: 6 }, { wch: 10 }, { wch: 10 },
-      ...cols.flatMap(() => [{ wch: 8 }, { wch: 8 }]),
-      { wch: 10 }, { wch: 10 }, { wch: 20 }
-    ]
-
-    XLSX.utils.book_append_sheet(wb, ws, 'Timesheet')
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
-
     return new NextResponse(buf, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

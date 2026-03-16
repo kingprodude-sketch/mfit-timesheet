@@ -6,20 +6,27 @@ export const maxDuration = 60
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-const EXTRACTION_PROMPT = `You are reading a handwritten MFIT Job Time Sheet. Multiple images of the same sheet may be provided (different pages or sections).
+function buildPrompt(pageNum: number, totalPages: number) {
+  return `You are reading page ${pageNum} of ${totalPages} of a handwritten MFIT Job Time Sheet.
 
-READ all images carefully and combine the data:
-1. Find the actual job number column headers (e.g. 953B, 956, 935, 959)
-2. Read IN TIME and OUT TIME for each row
-3. Read NT and OT values under each job column
+READ this page carefully:
+1. Find the job number column headers on THIS page (e.g. PG141-18, PG142-8, 978, 855, 993)
+2. Check if IN TIME and OUT TIME columns exist on this page - they may not
+3. Read NT and OT values for each job column per row
 4. Dashes or empty = ""
-5. Convert fractions to decimals: 3½=3.5, 2½=2.5, 8½=8.5
+5. Convert fractions: 3½=3.5, 2½=2.5, 8½=8.5
 6. NEVER use ½ or fraction characters
 
-Return ONLY raw JSON, no text before or after:
-{"meta":{"name":"","idNo":"","tradeName":"","monthYear":"","totalNT":"","totalOT":""},"jobColumns":["953B","956","935","959"],"rows":[{"day":"21","inTime":"","outTime":"","jobs":{"953B":{"nt":"","ot":""},"956":{"nt":"","ot":""},"935":{"nt":"","ot":""},"959":{"nt":"","ot":""}},"totalNT":"","totalOT":"","isSunday":false}]}
+Return ONLY raw JSON:
+{"hasInOut":true,"jobColumns":["col1","col2"],"rows":[{"day":"21","inTime":"","outTime":"","jobs":{"col1":{"nt":"","ot":""},"col2":{"nt":"","ot":""}},"totalNT":"","totalOT":"","isSunday":false}]}
 
-Use ACTUAL job numbers from image. Include all 31 rows (21-31 then 01-20).`
+Rules:
+- hasInOut = true only if IN TIME and OUT TIME columns exist on this page
+- If hasInOut is false, set inTime and outTime to "" for all rows
+- jobColumns = ACTUAL column headers from this page only
+- Include all 31 rows (21-31 then 01-20)
+- Empty string for blank/dash cells`
+}
 
 function sanitize(text: string): string {
   return text
@@ -32,42 +39,45 @@ function sanitize(text: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
 }
 
+async function extractPage(imageUrl: string, pageNum: number, totalPages: number) {
+  const response = await client.chat.completions.create({
+    model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+    max_tokens: 8000,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: imageUrl } },
+        { type: 'text', text: buildPrompt(pageNum, totalPages) }
+      ]
+    }]
+  } as any)
+
+  let text = response.choices[0]?.message?.content || ''
+  text = sanitize(text)
+  const firstBrace = text.indexOf('{')
+  const lastBrace = text.lastIndexOf('}')
+  if (firstBrace === -1 || lastBrace === -1) throw new Error(`Page ${pageNum}: AI did not return valid JSON`)
+  text = text.substring(firstBrace, lastBrace + 1)
+  return JSON.parse(text)
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { imageUrls } = body
+    const { imageUrls, meta } = body
 
     if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
       return NextResponse.json({ error: 'No valid images received.' }, { status: 400 })
     }
 
-    // Build content array with all images
-    const content: any[] = imageUrls.map((url: string) => ({
-      type: 'image_url',
-      image_url: { url }
-    }))
-    content.push({ type: 'text', text: EXTRACTION_PROMPT })
+    // Extract each page separately
+    const pages = await Promise.all(
+      imageUrls.map((url: string, i: number) =>
+        extractPage(url, i + 1, imageUrls.length)
+      )
+    )
 
-    const response = await client.chat.completions.create({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      max_tokens: 8000,
-      messages: [{ role: 'user', content }]
-    } as any)
-
-    let text = response.choices[0]?.message?.content || ''
-    console.log('Response length:', text.length)
-
-    text = sanitize(text)
-
-    const firstBrace = text.indexOf('{')
-    const lastBrace = text.lastIndexOf('}')
-    if (firstBrace === -1 || lastBrace === -1) {
-      throw new Error('AI did not return valid JSON')
-    }
-    text = text.substring(firstBrace, lastBrace + 1)
-
-    const data = JSON.parse(text)
-    return NextResponse.json(data)
+    return NextResponse.json({ pages, meta })
   } catch (err: any) {
     console.error('Extraction error:', err.message)
     return NextResponse.json({ error: err.message || 'Extraction failed' }, { status: 500 })
