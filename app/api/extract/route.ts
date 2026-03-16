@@ -6,24 +6,20 @@ export const maxDuration = 60
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-const EXTRACTION_PROMPT = `Read this MFIT Job Time Sheet image and return JSON.
+const EXTRACTION_PROMPT = `You are reading a handwritten MFIT Job Time Sheet. Multiple images of the same sheet may be provided (different pages or sections).
 
-Rules:
-- Find the actual job number columns in the image header
-- Convert fractions to decimals: 3½=3.5, 2½=2.5, 8½=8.5
-- Dashes or empty cells = ""
-- isSunday = true only if row says SUNDAY
+READ all images carefully and combine the data:
+1. Find the actual job number column headers (e.g. 953B, 956, 935, 959)
+2. Read IN TIME and OUT TIME for each row
+3. Read NT and OT values under each job column
+4. Dashes or empty = ""
+5. Convert fractions to decimals: 3½=3.5, 2½=2.5, 8½=8.5
+6. NEVER use ½ or fraction characters
 
-Return ONLY this JSON with no extra text:
-{
-  "meta": {"name":"","idNo":"","tradeName":"","monthYear":"","totalNT":"","totalOT":""},
-  "jobColumns": ["953B","956","935","959"],
-  "rows": [
-    {"day":"21","inTime":"","outTime":"","jobs":{"953B":{"nt":"","ot":""},"956":{"nt":"","ot":""},"935":{"nt":"","ot":""},"959":{"nt":"","ot":""}},"totalNT":"","totalOT":"","isSunday":false}
-  ]
-}
+Return ONLY raw JSON, no text before or after:
+{"meta":{"name":"","idNo":"","tradeName":"","monthYear":"","totalNT":"","totalOT":""},"jobColumns":["953B","956","935","959"],"rows":[{"day":"21","inTime":"","outTime":"","jobs":{"953B":{"nt":"","ot":""},"956":{"nt":"","ot":""},"935":{"nt":"","ot":""},"959":{"nt":"","ot":""}},"totalNT":"","totalOT":"","isSunday":false}]}
 
-Note: omit the remarks field entirely to save space. Include all 31 rows.`
+Use ACTUAL job numbers from image. Include all 31 rows (21-31 then 01-20).`
 
 function sanitize(text: string): string {
   return text
@@ -39,24 +35,23 @@ function sanitize(text: string): string {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { imageUrl } = body
+    const { imageUrls } = body
 
-    if (!imageUrl || !imageUrl.startsWith('data:')) {
-      return NextResponse.json({ error: 'No valid image received.' }, { status: 400 })
+    if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+      return NextResponse.json({ error: 'No valid images received.' }, { status: 400 })
     }
+
+    // Build content array with all images
+    const content: any[] = imageUrls.map((url: string) => ({
+      type: 'image_url',
+      image_url: { url }
+    }))
+    content.push({ type: 'text', text: EXTRACTION_PROMPT })
 
     const response = await client.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       max_tokens: 8000,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: imageUrl } },
-            { type: 'text', text: EXTRACTION_PROMPT }
-          ]
-        }
-      ]
+      messages: [{ role: 'user', content }]
     } as any)
 
     let text = response.choices[0]?.message?.content || ''

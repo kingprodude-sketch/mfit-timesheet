@@ -10,17 +10,17 @@ type JobData = { [jobCol: string]: { nt: string; ot: string } }
 type Row = {
   day: string; inTime: string; outTime: string
   jobs: JobData
-  totalNT: string; totalOT: string; remarks: string; isSunday: boolean
+  totalNT: string; totalOT: string; isSunday: boolean
 }
 type Meta = { name:string; idNo:string; tradeName:string; monthYear:string; totalNT:string; totalOT:string }
 
 const defaultRow = (day: string, cols: string[]): Row => ({
   day, inTime: '', outTime: '',
   jobs: Object.fromEntries(cols.map(c => [c, { nt: '', ot: '' }])),
-  totalNT: '', totalOT: '', remarks: '', isSunday: false
+  totalNT: '', totalOT: '', isSunday: false
 })
 const defaultMeta = (): Meta => ({ name:'', idNo:'', tradeName:'', monthYear:'', totalNT:'', totalOT:'' })
-const DEFAULT_COLS = ['Job1', 'Job2', 'Job3', 'Job4']
+const DEFAULT_COLS = ['Job1','Job2','Job3','Job4']
 
 export default function App() {
   const [rows, setRows] = useState<Row[]>(DAYS.map(d => defaultRow(d, DEFAULT_COLS)))
@@ -49,15 +49,12 @@ export default function App() {
     } catch(e) { console.error('useEffect error', e) }
   }, [])
 
-  const pdfToJpeg = async (f: File): Promise<string> => {
-    const pdfjs = (window as any).pdfjsLib
-    if (!pdfjs) throw new Error('PDF engine not ready, please try again in a moment')
-    const buf = await f.arrayBuffer()
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise
-    const page = await pdf.getPage(1)
+  const pageToJpeg = async (pdf: any, pageNum: number): Promise<string> => {
+    const page = await pdf.getPage(pageNum)
     const vp = page.getViewport({ scale: 2.5 })
     const canvas = document.createElement('canvas')
-    canvas.width = vp.width; canvas.height = vp.height
+    canvas.width = vp.width
+    canvas.height = vp.height
     await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
     return canvas.toDataURL('image/jpeg', 0.92)
   }
@@ -73,15 +70,30 @@ export default function App() {
     if (!file || busy) return
     setBusy(true); setDone(false)
     try {
-      setMsg('Converting PDF to image...'); setMsgType('info')
       const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type.includes('pdf')
-      const imageUrl = isPdf ? await pdfToJpeg(file) : await toDataUrl(file)
+
+      let imageUrls: string[] = []
+
+      if (isPdf) {
+        setMsg('Loading PDF...'); 
+        const pdfjs = (window as any).pdfjsLib
+        if (!pdfjs) throw new Error('PDF engine not ready, please try again')
+        const buf = await file.arrayBuffer()
+        const pdf = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise
+        const numPages = pdf.numPages
+        setMsg(`Converting ${numPages} page(s) to images...`)
+        for (let i = 1; i <= Math.min(numPages, 3); i++) {
+          imageUrls.push(await pageToJpeg(pdf, i))
+        }
+      } else {
+        imageUrls = [await toDataUrl(file)]
+      }
 
       setMsg('AI reading handwriting...')
       const res = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageUrl })
+        body: JSON.stringify({ imageUrls })
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Server error')
@@ -103,7 +115,6 @@ export default function App() {
           jobs,
           totalNT: r.totalNT || '',
           totalOT: r.totalOT || '',
-          remarks: r.remarks || '',
           isSunday: r.isSunday || false
         }
       })
@@ -174,7 +185,6 @@ export default function App() {
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns:'280px 1fr', gap:'1.25rem', alignItems:'start' }}>
-        {/* Left */}
         <div style={{ display:'flex', flexDirection:'column', gap:'0.7rem' }}>
           <div style={{ background:'#1a1a1a', border:'2px dashed #333', borderRadius:6, padding:'1.5rem 1rem', textAlign:'center', cursor:'pointer' }}
             onClick={() => fileRef.current?.click()}
@@ -198,8 +208,7 @@ export default function App() {
 
           {!pdfReady && <div style={{ fontSize:'0.6rem', color:'#d4a017', textAlign:'center' as const }}>⏳ Loading PDF engine...</div>}
 
-          <button disabled={busy || !file}
-            onClick={extract}
+          <button disabled={busy || !file} onClick={extract}
             style={{ padding:'0.75rem', background: busy||!file ? '#333' : '#d4a017', color: busy||!file ? '#666' : '#000', fontWeight:800, fontSize:'0.8rem', letterSpacing:'0.08em', border:'none', borderRadius:4, cursor: busy||!file ? 'not-allowed':'pointer', width:'100%' }}>
             {busy ? `⏳ ${msg}` : '⚡ EXTRACT WITH AI'}
           </button>
@@ -219,7 +228,7 @@ export default function App() {
 
           <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:6, padding:'1rem' }}>
             <div style={{ fontSize:'0.6rem', color:'#444', letterSpacing:'0.1em', textTransform:'uppercase' as const, marginBottom:'0.6rem' }}>Document Info</div>
-            {[['Name','name'],['ID No','idNo'],['Trade','tradeName'],['Month/Year','monthYear']] .map(([l,k]) => (
+            {[['Name','name'],['ID No','idNo'],['Trade','tradeName'],['Month/Year','monthYear']].map(([l,k]) => (
               <div key={k} style={{ marginBottom:'0.45rem' }}>
                 <div style={{ fontSize:'0.55rem', color:'#555', marginBottom:2 }}>{l}</div>
                 <input style={s.metaInp} value={meta[k as keyof Meta]} onChange={e => setMeta(m => ({...m,[k]:e.target.value}))} />
@@ -241,7 +250,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* Table */}
         <div style={{ background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:6, overflow:'hidden' }}>
           <div style={{ padding:'0.6rem 1rem', borderBottom:'1px solid #2a2a2a', fontSize:'0.7rem', color:'#555', letterSpacing:'0.1em' }}>
             TIMESHEET DATA — <span style={{ color:'#333', fontSize:'0.6rem' }}>all cells editable</span>
@@ -259,7 +267,6 @@ export default function App() {
                   </>))}
                   <th style={s.th}>TOT NT</th>
                   <th style={s.th}>TOT OT</th>
-                  <th style={s.th}>REMARKS</th>
                   <th style={s.th}>SUN</th>
                 </tr>
               </thead>
@@ -275,7 +282,6 @@ export default function App() {
                     </>))}
                     <td style={{ ...s.td(r.isSunday), minWidth:42, color:'#d4a017' }}><input style={{ ...s.inp, color:'#d4a017' }} value={r.totalNT} onChange={e => updRow(i,'totalNT',e.target.value)} /></td>
                     <td style={{ ...s.td(r.isSunday), minWidth:42, color:'#d4a017' }}><input style={{ ...s.inp, color:'#d4a017' }} value={r.totalOT} onChange={e => updRow(i,'totalOT',e.target.value)} /></td>
-                    <td style={{ ...s.td(r.isSunday), minWidth:80 }}><input style={{ ...s.inp, textAlign:'left' as const }} value={r.remarks} onChange={e => updRow(i,'remarks',e.target.value)} /></td>
                     <td style={{ ...s.td(r.isSunday), textAlign:'center' as const, minWidth:28 }}>
                       <input type="checkbox" checked={r.isSunday} onChange={e => updRow(i,'isSunday',e.target.checked)} style={{ accentColor:'#ef4444' }} />
                     </td>
