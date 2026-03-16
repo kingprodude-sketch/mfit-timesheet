@@ -6,30 +6,41 @@ export const maxDuration = 60
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-const EXTRACTION_PROMPT = `You are extracting data from a handwritten MFIT Interior Decoration LLC Job Time Sheet image.
+const EXTRACTION_PROMPT = `You are reading a handwritten MFIT Job Time Sheet image.
 
-IMPORTANT: The job number columns vary per timesheet. Read the actual column headers from the image carefully.
+STEP 1 - Read the column headers row carefully:
+- There is a "JOB NO." section with multiple job number columns (e.g. 953, 956, 935, 959 OR 764, 782, 963, 968, 993 etc.)
+- Each job number has TWO sub-columns: NT (normal time) and OT (overtime)
+- There is also IN TIME, OUT TIME, TOTAL NT, TOTAL OT, REMARKS
 
-Return ONLY valid JSON, no markdown, no explanation:
+STEP 2 - Read each row carefully:
+- Each row is one day (21-31 then 01-20)
+- Read the IN TIME and OUT TIME (e.g. "7:00Am", "6:15Pm")
+- For each job column, read the NT and OT values (numbers like 8, 2, 3½, 5, etc.)
+- Dashes "—" mean empty/zero, write ""
+- Read TOTAL NT and TOTAL OT at the end of each row
+
+STEP 3 - Return ONLY this JSON, no markdown, no explanation:
 {
   "meta": {
-    "name": "",
-    "idNo": "",
-    "tradeName": "",
-    "monthYear": "",
-    "totalNT": "",
-    "totalOT": ""
+    "name": "DURGA RAM",
+    "idNo": "TE2501989",
+    "tradeName": "CARPENTER",
+    "monthYear": "SEP/OCT",
+    "totalNT": "77.5",
+    "totalOT": "20"
   },
-  "jobColumns": ["764", "782", "963"],
+  "jobColumns": ["953B", "956", "935", "959"],
   "rows": [
     {
       "day": "21",
-      "inTime": "",
-      "outTime": "",
+      "inTime": "7:00AM",
+      "outTime": "6:15PM",
       "jobs": {
-        "764": { "nt": "8", "ot": "2" },
-        "782": { "nt": "", "ot": "" },
-        "963": { "nt": "", "ot": "" }
+        "953B": { "nt": "8", "ot": "2" },
+        "956": { "nt": "", "ot": "" },
+        "935": { "nt": "", "ot": "" },
+        "959": { "nt": "", "ot": "" }
       },
       "totalNT": "8",
       "totalOT": "2",
@@ -39,13 +50,13 @@ Return ONLY valid JSON, no markdown, no explanation:
   ]
 }
 
-Rules:
-- Read the ACTUAL job number column headers from the image (e.g. 764, 782, 963, 968, 993)
-- List them in "jobColumns" array in the order they appear
-- Each row's "jobs" object must have a key for EVERY job column
-- Include all 31 rows (days 21-31 then 01-20)
-- Empty string for blank cells
-- Set isSunday true for Sunday rows`
+CRITICAL RULES:
+- jobColumns must be the ACTUAL job numbers you see in the header row of the image
+- Every row must have ALL job columns listed in jobColumns
+- Use "" for empty cells, NOT dashes or null
+- isSunday = true only if the row is marked SUNDAY
+- Include ALL 31 rows even if some are empty
+- Do NOT put job data in remarks field`
 
 export async function POST(req: NextRequest) {
   try {
@@ -71,6 +82,7 @@ export async function POST(req: NextRequest) {
     } as any)
 
     const text = response.choices[0]?.message?.content || ''
+    console.log('Groq raw response:', text.substring(0, 500))
     const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
     const data = JSON.parse(clean)
     return NextResponse.json(data)
