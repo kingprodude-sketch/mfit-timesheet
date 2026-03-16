@@ -6,21 +6,24 @@ export const maxDuration = 60
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-const EXTRACTION_PROMPT = `You are reading a handwritten MFIT Job Time Sheet image.
+const EXTRACTION_PROMPT = `Read this MFIT Job Time Sheet image and return JSON.
 
-READ the image carefully:
-1. Find the actual job number column headers in the image (e.g. 953B, 956, 935, 959)
-2. Read IN TIME and OUT TIME for each row
-3. Read NT and OT values under each job column
-4. Dashes or blank cells = use empty string ""
-5. Convert ALL fractions to decimals: 3½=3.5, 2½=2.5, 1½=1.5, 8½=8.5
-6. NEVER use ½ or any fraction characters in JSON values
-7. ALL values must be plain strings like "8", "3.5", "2", ""
+Rules:
+- Find the actual job number columns in the image header
+- Convert fractions to decimals: 3½=3.5, 2½=2.5, 8½=8.5
+- Dashes or empty cells = ""
+- isSunday = true only if row says SUNDAY
 
-OUTPUT ONLY RAW JSON starting with { and ending with }. No text before or after:
-{"meta":{"name":"","idNo":"","tradeName":"","monthYear":"","totalNT":"","totalOT":""},"jobColumns":["953B","956","935","959"],"rows":[{"day":"21","inTime":"","outTime":"","jobs":{"953B":{"nt":"","ot":""},"956":{"nt":"","ot":""},"935":{"nt":"","ot":""},"959":{"nt":"","ot":""}},"totalNT":"","totalOT":"","remarks":"","isSunday":false}]}
+Return ONLY this JSON with no extra text:
+{
+  "meta": {"name":"","idNo":"","tradeName":"","monthYear":"","totalNT":"","totalOT":""},
+  "jobColumns": ["953B","956","935","959"],
+  "rows": [
+    {"day":"21","inTime":"","outTime":"","jobs":{"953B":{"nt":"","ot":""},"956":{"nt":"","ot":""},"935":{"nt":"","ot":""},"959":{"nt":"","ot":""}},"totalNT":"","totalOT":"","isSunday":false}
+  ]
+}
 
-Replace jobColumns with ACTUAL job numbers from the image. Include all 31 rows.`
+Note: omit the remarks field entirely to save space. Include all 31 rows.`
 
 function sanitize(text: string): string {
   return text
@@ -30,7 +33,6 @@ function sanitize(text: string): string {
     .replace(/¼/g, '0.25')
     .replace(/(\d+)\s*¾/g, (_, n) => String(parseFloat(n) + 0.75))
     .replace(/¾/g, '0.75')
-    // Remove control characters except newlines and tabs
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
 }
 
@@ -45,7 +47,7 @@ export async function POST(req: NextRequest) {
 
     const response = await client.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      max_tokens: 4096,
+      max_tokens: 8000,
       messages: [
         {
           role: 'user',
@@ -58,15 +60,10 @@ export async function POST(req: NextRequest) {
     } as any)
 
     let text = response.choices[0]?.message?.content || ''
-
-    // Log around position 13470 where the error occurs
     console.log('Response length:', text.length)
-    console.log('Around error position:', text.substring(13400, 13550))
 
-    // Sanitize
     text = sanitize(text)
 
-    // Strip text before { and after }
     const firstBrace = text.indexOf('{')
     const lastBrace = text.lastIndexOf('}')
     if (firstBrace === -1 || lastBrace === -1) {
