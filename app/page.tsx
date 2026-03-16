@@ -1,240 +1,291 @@
 'use client'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
-const DAYS = Array.from({ length: 11 }, (_, i) => String(21 + i).padStart(2, '0'))
-  .concat(Array.from({ length: 20 }, (_, i) => String(i + 1).padStart(2, '0')))
-const JOB_COLS = ['953B', '956', '935', '959']
-const emptyRow = (day: string) => ({
-  day, inTime: '', outTime: '',
-  jobs: { '953B': { nt: '', ot: '' }, '956': { nt: '', ot: '' }, '935': { nt: '', ot: '' }, '959': { nt: '', ot: '' } },
-  totalNT: '', totalOT: '', remarks: '', isSunday: false,
-})
-const defaultData = () => DAYS.map(emptyRow)
-type RowData = ReturnType<typeof emptyRow>
+const DAYS = [
+  '21','22','23','24','25','26','27','28','29','30','31',
+  '01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20'
+]
+const JOBS = ['953B','956','935','959']
 
-export default function Home() {
+function emptyRow(day: string) {
+  return {
+    day, inTime: '', outTime: '',
+    j953B_nt:'', j953B_ot:'',
+    j956_nt:'', j956_ot:'',
+    j935_nt:'', j935_ot:'',
+    j959_nt:'', j959_ot:'',
+    totalNT:'', totalOT:'', remarks:'', isSunday: false
+  }
+}
+
+type Row = ReturnType<typeof emptyRow>
+type Meta = { name:string, idNo:string, tradeName:string, monthYear:string, totalNT:string, totalOT:string }
+
+const defaultRows = () => DAYS.map(emptyRow)
+const defaultMeta = (): Meta => ({ name:'', idNo:'', tradeName:'', monthYear:'', totalNT:'', totalOT:'' })
+
+export default function App() {
+  const [rows, setRows] = useState<Row[]>(defaultRows())
+  const [meta, setMeta] = useState<Meta>(defaultMeta())
   const [file, setFile] = useState<File | null>(null)
-  const [status, setStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle')
-  const [statusMsg, setStatusMsg] = useState('')
-  const [rows, setRows] = useState<RowData[]>(defaultData())
-  const [meta, setMeta] = useState({ name: '', idNo: '', tradeName: '', monthYear: '', totalNT: '', totalOT: '' })
-  const [dragging, setDragging] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [msgType, setMsgType] = useState<'info'|'ok'|'err'>('info')
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
   const [pdfReady, setPdfReady] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if ((window as any).pdfjsLib) { setPdfReady(true); return }
-    const script = document.createElement('script')
-    script.src = '/pdf.worker.js'
-    script.onload = () => {
-      ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-        '/pdf.worker.min.js'
-      setPdfReady(true)
-    }
-    document.head.appendChild(script)
+    try {
+      if ((window as any).pdfjsLib) { setPdfReady(true); return }
+      const s = document.createElement('script')
+      s.src = '/pdf.min.js'
+      s.onload = () => {
+        try {
+          ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js'
+          setPdfReady(true)
+        } catch(e) { console.error('PDF worker error', e) }
+      }
+      s.onerror = (e) => console.error('PDF script load error', e)
+      document.head.appendChild(s)
+    } catch(e) { console.error('useEffect error', e) }
   }, [])
 
-  const handleFile = (f: File) => { setFile(f); setStatus('idle'); setStatusMsg('') }
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); setDragging(false)
-    const f = e.dataTransfer.files[0]; if (f) handleFile(f)
-  }, [])
+  const pickFile = (f: File) => {
+    setFile(f)
+    setMsg('')
+    setDone(false)
+  }
 
-  const convertToDataUrl = async (f: File): Promise<string> => {
-    const isPdf = f.type.includes('pdf') || f.name.toLowerCase().endsWith('.pdf')
-    if (!isPdf) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = e => resolve(e.target?.result as string)
-        reader.onerror = reject
-        reader.readAsDataURL(f)
-      })
-    }
+  const toDataUrl = (f: File): Promise<string> => new Promise((res, rej) => {
+    const reader = new FileReader()
+    reader.onload = e => res(e.target?.result as string)
+    reader.onerror = rej
+    reader.readAsDataURL(f)
+  })
 
-    if (!pdfReady) throw new Error('PDF.js still loading, please try again in 3 seconds')
-    const pdfjsLib = (window as any).pdfjsLib
-    const arrayBuffer = await f.arrayBuffer()
-    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise
+  const pdfToJpeg = async (f: File): Promise<string> => {
+    const pdfjs = (window as any).pdfjsLib
+    if (!pdfjs) throw new Error('PDF engine not ready, please try again')
+    const buf = await f.arrayBuffer()
+    const pdf = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise
     const page = await pdf.getPage(1)
-    const viewport = page.getViewport({ scale: 2.5 })
+    const vp = page.getViewport({ scale: 2.5 })
     const canvas = document.createElement('canvas')
-    canvas.width = viewport.width
-    canvas.height = viewport.height
-    const ctx = canvas.getContext('2d')!
-    await page.render({ canvasContext: ctx, viewport }).promise
+    canvas.width = vp.width
+    canvas.height = vp.height
+    await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
     return canvas.toDataURL('image/jpeg', 0.92)
   }
 
-  const extractData = async () => {
-    if (!file) return
-    setStatus('processing')
+  const extract = async () => {
+    if (!file || busy) return
+    setBusy(true); setDone(false)
     try {
-      setStatusMsg('Converting PDF to image...')
-      const imageUrl = await convertToDataUrl(file)
-      console.log('Image URL length:', imageUrl.length, 'starts with:', imageUrl.substring(0, 40))
+      setMsg('Converting PDF...'); setMsgType('info')
+      const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type.includes('pdf')
+      const imageUrl = isPdf ? await pdfToJpeg(file) : await toDataUrl(file)
 
-      setStatusMsg('AI reading handwriting...')
+      setMsg('AI reading handwriting...')
       const res = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl })
       })
       const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Failed')
-      setRows(json.rows || defaultData())
-      setMeta(json.meta || meta)
-      setStatus('done')
-      setStatusMsg('Extraction complete!')
-    } catch (err: any) {
-      setStatus('error')
-      setStatusMsg(err.message)
+      if (!res.ok) throw new Error(json.error || 'Server error')
+
+      // Map JSON rows to flat row format
+      const mapped: Row[] = DAYS.map(day => {
+        const r = json.rows?.find((x: any) => x.day === day)
+        if (!r) return emptyRow(day)
+        return {
+          day,
+          inTime: r.inTime || '',
+          outTime: r.outTime || '',
+          j953B_nt: r.jobs?.['953B']?.nt || '',
+          j953B_ot: r.jobs?.['953B']?.ot || '',
+          j956_nt: r.jobs?.['956']?.nt || '',
+          j956_ot: r.jobs?.['956']?.ot || '',
+          j935_nt: r.jobs?.['935']?.nt || '',
+          j935_ot: r.jobs?.['935']?.ot || '',
+          j959_nt: r.jobs?.['959']?.nt || '',
+          j959_ot: r.jobs?.['959']?.ot || '',
+          totalNT: r.totalNT || '',
+          totalOT: r.totalOT || '',
+          remarks: r.remarks || '',
+          isSunday: r.isSunday || false
+        }
+      })
+      setRows(mapped)
+      setMeta({
+        name: json.meta?.name || '',
+        idNo: json.meta?.idNo || '',
+        tradeName: json.meta?.tradeName || '',
+        monthYear: json.meta?.monthYear || '',
+        totalNT: json.meta?.totalNT || '',
+        totalOT: json.meta?.totalOT || '',
+      })
+      setMsg('✓ Extraction complete!'); setMsgType('ok')
+      setDone(true)
+    } catch(e: any) {
+      setMsg(e.message || 'Failed'); setMsgType('err')
+    } finally {
+      setBusy(false)
     }
   }
 
-  const exportExcel = async () => {
-    setStatusMsg('Generating Excel...')
-    const res = await fetch('/api/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, meta }),
-    })
-    if (!res.ok) return
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${meta.name || 'Timesheet'}_${meta.monthYear || 'export'}.xlsx`
-    a.click()
-    URL.revokeObjectURL(url)
-    setStatusMsg('Downloaded!')
+  const download = async () => {
+    setMsg('Building Excel...'); setMsgType('info')
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows, meta })
+      })
+      if (!res.ok) throw new Error('Export failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${meta.name || 'Timesheet'}_${meta.monthYear || 'export'}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+      setMsg('✓ Downloaded!'); setMsgType('ok')
+    } catch(e: any) {
+      setMsg(e.message); setMsgType('err')
+    }
   }
 
-  const updateCell = (i: number, field: string, value: string, jobKey?: string, sub?: string) => {
-    setRows(prev => prev.map((r, idx) => {
-      if (idx !== i) return r
-      if (jobKey && sub) return { ...r, jobs: { ...r.jobs, [jobKey]: { ...r.jobs[jobKey as keyof typeof r.jobs], [sub]: value } } }
-      return { ...r, [field]: value }
-    }))
-  }
+  const upd = (i: number, k: keyof Row, v: string | boolean) =>
+    setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r))
 
-  const cell: React.CSSProperties = { border: '1px solid var(--border)', padding: '2px 4px', textAlign: 'center' }
-  const inp: React.CSSProperties = { background: 'transparent', border: 'none', outline: 'none', width: '100%', textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'inherit' }
+  const s = {
+    page: { minHeight:'100vh', padding:'1.5rem', maxWidth:1500, margin:'0 auto', fontFamily:'monospace' } as React.CSSProperties,
+    card: { background:'#1a1a1a', border:'1px solid #333', borderRadius:6, padding:'1.25rem' } as React.CSSProperties,
+    btn: (color: string, disabled?: boolean): React.CSSProperties => ({
+      width:'100%', padding:'0.8rem', background: disabled ? '#555' : color,
+      color: color === '#d4a017' || color === '#22c55e' ? '#000' : '#fff',
+      fontWeight:800, fontSize:'0.85rem', letterSpacing:'0.08em',
+      border:'none', borderRadius:4, cursor: disabled ? 'not-allowed' : 'pointer'
+    }),
+    th: { border:'1px solid #333', padding:'4px 6px', background:'#222', color:'#888', fontSize:'0.65rem', textAlign:'center' as const, whiteSpace:'nowrap' as const },
+    td: (sunday: boolean): React.CSSProperties => ({ border:'1px solid #2a2a2a', padding:'1px 3px', background: sunday ? 'rgba(239,68,68,0.07)' : 'transparent' }),
+    inp: { background:'transparent', border:'none', outline:'none', width:'100%', textAlign:'center' as const, fontSize:'0.68rem', color:'#ccc', fontFamily:'monospace' } as React.CSSProperties,
+    label: { fontSize:'0.6rem', color:'#666', letterSpacing:'0.08em', textTransform:'uppercase' as const, display:'block', marginBottom:3 } as React.CSSProperties,
+    metaInp: { width:'100%', background:'#111', border:'1px solid #333', color:'#ccc', fontFamily:'monospace', fontSize:'0.75rem', padding:'0.3rem 0.5rem', borderRadius:3, outline:'none', boxSizing:'border-box' as const } as React.CSSProperties,
+  }
 
   return (
-    <main style={{ minHeight: '100vh', padding: '2rem', maxWidth: 1400, margin: '0 auto' }}>
-      <header style={{ marginBottom: '2.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '1rem' }}>
-          <span style={{ fontFamily: 'var(--font-heading)', fontSize: '2rem', fontWeight: 800, color: 'var(--accent)' }}>MFIT</span>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-dim)', letterSpacing: '0.15em', textTransform: 'uppercase' as const }}>Timesheet Extractor</span>
+    <div style={s.page}>
+      {/* Header */}
+      <div style={{ marginBottom:'2rem' }}>
+        <div style={{ display:'flex', alignItems:'baseline', gap:'0.75rem' }}>
+          <span style={{ fontSize:'2rem', fontWeight:900, color:'#d4a017', letterSpacing:'-0.02em' }}>MFIT</span>
+          <span style={{ fontSize:'0.8rem', color:'#555', letterSpacing:'0.2em', textTransform:'uppercase' as const }}>Timesheet Extractor</span>
         </div>
-        <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-          Upload a handwritten PDF → AI reads it → Download clean Excel
-        </p>
-      </header>
+        <p style={{ fontSize:'0.7rem', color:'#444', marginTop:'0.2rem' }}>Upload handwritten PDF → AI reads it → Download Excel</p>
+      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: '2rem', alignItems: 'start' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div
-            style={{ padding: '2rem 1.5rem', textAlign: 'center', cursor: 'pointer', background: 'var(--surface)', border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 4 }}
-            onDrop={onDrop} onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display: 'none' }} onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
-            <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📄</div>
+      <div style={{ display:'grid', gridTemplateColumns:'300px 1fr', gap:'1.5rem', alignItems:'start' }}>
+        {/* Left panel */}
+        <div style={{ display:'flex', flexDirection:'column', gap:'0.75rem' }}>
+          {/* Drop zone */}
+          <div style={{ ...s.card, textAlign:'center', cursor:'pointer', border:'2px dashed #333' }}
+            onClick={() => fileRef.current?.click()}
+            onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if(f) pickFile(f) }}
+            onDragOver={e => e.preventDefault()}>
+            <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display:'none' }}
+              onChange={e => { const f = e.target.files?.[0]; if(f) pickFile(f) }} />
+            <div style={{ fontSize:'1.8rem', marginBottom:'0.4rem' }}>📄</div>
             {file ? (
               <>
-                <p style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '0.85rem' }}>{file.name}</p>
-                <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{(file.size/1024).toFixed(0)} KB — click to change</p>
+                <div style={{ color:'#d4a017', fontSize:'0.8rem', fontWeight:700, wordBreak:'break-word' as const }}>{file.name}</div>
+                <div style={{ color:'#555', fontSize:'0.65rem' }}>{(file.size/1024).toFixed(0)} KB — click to change</div>
               </>
             ) : (
               <>
-                <p style={{ fontWeight: 700, fontSize: '0.9rem' }}>Drop PDF here</p>
-                <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>or click to browse</p>
+                <div style={{ color:'#888', fontSize:'0.85rem', fontWeight:700 }}>Drop PDF or image here</div>
+                <div style={{ color:'#555', fontSize:'0.65rem' }}>or click to browse</div>
               </>
             )}
           </div>
 
-          {!pdfReady && <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--accent)', textAlign: 'center' }}>⏳ Loading PDF engine...</p>}
+          {!pdfReady && <div style={{ fontSize:'0.65rem', color:'#d4a017', textAlign:'center' as const }}>⏳ Loading PDF engine...</div>}
 
-          <button onClick={extractData} disabled={!file || status === 'processing'}
-            style={{ padding: '0.85rem', background: 'var(--accent)', color: '#000', fontWeight: 800, fontSize: '0.85rem', letterSpacing: '0.1em', border: 'none', cursor: file ? 'pointer' : 'not-allowed', opacity: file ? 1 : 0.5, borderRadius: 2 }}>
-            {status === 'processing' ? `⏳ ${statusMsg}` : '⚡ EXTRACT WITH AI'}
+          <button style={s.btn('#d4a017', busy || !file)} onClick={extract} disabled={busy || !file}>
+            {busy ? `⏳ ${msg}` : '⚡ EXTRACT WITH AI'}
           </button>
 
-          {status === 'done' && (
-            <button onClick={exportExcel}
-              style={{ padding: '0.85rem', background: '#22c55e', color: '#000', fontWeight: 800, fontSize: '0.85rem', letterSpacing: '0.1em', border: 'none', cursor: 'pointer', borderRadius: 2 }}>
-              ↓ DOWNLOAD EXCEL
-            </button>
-          )}
+          {done && <button style={s.btn('#22c55e')} onClick={download}>↓ DOWNLOAD EXCEL</button>}
 
-          {statusMsg && (
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', padding: '0.6rem 0.8rem', background: 'var(--surface)', border: `1px solid ${status === 'error' ? '#ef4444' : status === 'done' ? '#22c55e' : 'var(--border)'}`, color: status === 'error' ? '#ef4444' : status === 'done' ? '#22c55e' : 'var(--text-muted)', borderRadius: 2, wordBreak: 'break-word' as const }}>
-              {status === 'error' ? '✗ ' : status === 'done' ? '✓ ' : '→ '}{statusMsg}
+          {msg && !busy && (
+            <div style={{ fontSize:'0.7rem', padding:'0.5rem 0.75rem', border:`1px solid ${msgType==='ok'?'#22c55e':msgType==='err'?'#ef4444':'#333'}`, color: msgType==='ok'?'#22c55e':msgType==='err'?'#ef4444':'#888', borderRadius:3, wordBreak:'break-word' as const }}>
+              {msg}
             </div>
           )}
 
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.6rem', borderRadius: 4 }}>
-            <p style={{ fontWeight: 700, fontSize: '0.65rem', letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: 'var(--text-dim)', marginBottom: '0.25rem' }}>Document Info</p>
-            {[['NAME', 'name'], ['ID NO', 'idNo'], ['TRADE', 'tradeName'], ['MONTH/YEAR', 'monthYear']].map(([label, key]) => (
-              <div key={key}>
-                <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'var(--text-dim)', display: 'block', marginBottom: '0.15rem' }}>{label}</label>
-                <input value={meta[key as keyof typeof meta]} onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
-                  style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', padding: '0.35rem 0.5rem', outline: 'none', borderRadius: 2, boxSizing: 'border-box' as const }} />
+          {/* Meta */}
+          <div style={s.card}>
+            <div style={{ fontSize:'0.65rem', color:'#555', letterSpacing:'0.1em', textTransform:'uppercase' as const, marginBottom:'0.75rem' }}>Document Info</div>
+            {(['name','idNo','tradeName','monthYear'] as const).map(k => (
+              <div key={k} style={{ marginBottom:'0.5rem' }}>
+                <label style={s.label}>{k === 'idNo' ? 'ID No' : k === 'tradeName' ? 'Trade' : k === 'monthYear' ? 'Month/Year' : 'Name'}</label>
+                <input style={s.metaInp} value={meta[k]} onChange={e => setMeta(m => ({...m, [k]: e.target.value}))} />
               </div>
             ))}
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              {[['TOTAL NT', 'totalNT'], ['TOTAL OT', 'totalOT']].map(([label, key]) => (
-                <div key={key} style={{ flex: 1 }}>
-                  <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6rem', color: 'var(--text-dim)', display: 'block', marginBottom: '0.15rem' }}>{label}</label>
-                  <input value={meta[key as keyof typeof meta]} onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))}
-                    style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--accent)', fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: '1rem', padding: '0.35rem 0.5rem', outline: 'none', borderRadius: 2, textAlign: 'center' as const, boxSizing: 'border-box' as const }} />
+            <div style={{ display:'flex', gap:'0.5rem', marginTop:'0.25rem' }}>
+              {(['totalNT','totalOT'] as const).map(k => (
+                <div key={k} style={{ flex:1 }}>
+                  <label style={s.label}>{k === 'totalNT' ? 'Total NT' : 'Total OT'}</label>
+                  <input style={{ ...s.metaInp, color:'#d4a017', fontWeight:700, textAlign:'center' as const }} value={meta[k]} onChange={e => setMeta(m => ({...m, [k]: e.target.value}))} />
                 </div>
               ))}
             </div>
           </div>
+
+          <button style={{ ...s.btn('#333'), color:'#888', fontSize:'0.7rem' }} onClick={() => { setRows(defaultRows()); setMeta(defaultMeta()); setDone(false); setMsg('') }}>
+            Reset Table
+          </button>
         </div>
 
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 700, fontSize: '0.8rem', letterSpacing: '0.08em', textTransform: 'uppercase' as const }}>Timesheet Data</span>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', padding: '0.2rem 0.6rem', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>EDITABLE</span>
-              <button onClick={() => { setRows(defaultData()); setMeta({ name: '', idNo: '', tradeName: '', monthYear: '', totalNT: '', totalOT: '' }); setStatus('idle'); setStatusMsg('') }}
-                style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', padding: '0.2rem 0.6rem', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>Reset</button>
-            </div>
+        {/* Table */}
+        <div style={{ ...s.card, padding:0, overflow:'hidden' }}>
+          <div style={{ padding:'0.75rem 1rem', borderBottom:'1px solid #333', fontSize:'0.75rem', fontWeight:700, letterSpacing:'0.1em', color:'#888' }}>
+            TIMESHEET DATA <span style={{ color:'#444', fontWeight:400, fontSize:'0.65rem', marginLeft:'0.5rem' }}>— all cells editable</span>
           </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ borderCollapse:'collapse', width:'100%' }}>
               <thead>
-                <tr style={{ background: 'var(--surface2)' }}>
-                  <th style={cell}>DAY</th>
-                  <th style={cell}>IN TIME</th>
-                  <th style={cell}>OUT TIME</th>
-                  {JOB_COLS.map(j => (<>
-                    <th key={`${j}nt`} style={cell}>{j}<br/>NT</th>
-                    <th key={`${j}ot`} style={cell}>{j}<br/>OT</th>
-                  </>))}
-                  <th style={cell}>TOT NT</th>
-                  <th style={cell}>TOT OT</th>
-                  <th style={cell}>REMARKS</th>
-                  <th style={cell}>SUN</th>
+                <tr>
+                  <th style={s.th}>DAY</th>
+                  <th style={s.th}>IN</th>
+                  <th style={s.th}>OUT</th>
+                  <th style={s.th}>953B NT</th><th style={s.th}>953B OT</th>
+                  <th style={s.th}>956 NT</th><th style={s.th}>956 OT</th>
+                  <th style={s.th}>935 NT</th><th style={s.th}>935 OT</th>
+                  <th style={s.th}>959 NT</th><th style={s.th}>959 OT</th>
+                  <th style={s.th}>TOT NT</th>
+                  <th style={s.th}>TOT OT</th>
+                  <th style={s.th}>REMARKS</th>
+                  <th style={s.th}>SUN</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => (
-                  <tr key={row.day} style={{ background: row.isSunday ? 'rgba(239,68,68,0.08)' : 'transparent' }}>
-                    <td style={{ ...cell, fontWeight: 700, color: row.isSunday ? '#ef4444' : 'var(--accent)', minWidth: 36 }}>{row.day}</td>
-                    <td style={{ ...cell, minWidth: 70 }}><input style={inp} value={row.inTime} onChange={e => updateCell(i, 'inTime', e.target.value)} /></td>
-                    <td style={{ ...cell, minWidth: 70 }}><input style={inp} value={row.outTime} onChange={e => updateCell(i, 'outTime', e.target.value)} /></td>
-                    {JOB_COLS.map(j => (<>
-                      <td key={`${j}nt`} style={{ ...cell, minWidth: 40 }}><input style={inp} value={row.jobs[j as keyof typeof row.jobs].nt} onChange={e => updateCell(i, 'jobs', e.target.value, j, 'nt')} /></td>
-                      <td key={`${j}ot`} style={{ ...cell, minWidth: 40 }}><input style={inp} value={row.jobs[j as keyof typeof row.jobs].ot} onChange={e => updateCell(i, 'jobs', e.target.value, j, 'ot')} /></td>
-                    </>))}
-                    <td style={{ ...cell, minWidth: 46, color: 'var(--accent)', fontWeight: 600 }}><input style={{ ...inp, color: 'var(--accent)' }} value={row.totalNT} onChange={e => updateCell(i, 'totalNT', e.target.value)} /></td>
-                    <td style={{ ...cell, minWidth: 46, color: 'var(--accent)', fontWeight: 600 }}><input style={{ ...inp, color: 'var(--accent)' }} value={row.totalOT} onChange={e => updateCell(i, 'totalOT', e.target.value)} /></td>
-                    <td style={{ ...cell, minWidth: 90 }}><input style={{ ...inp, textAlign: 'left' as const }} value={row.remarks} onChange={e => updateCell(i, 'remarks', e.target.value)} /></td>
-                    <td style={{ ...cell, minWidth: 36 }}><input type="checkbox" checked={row.isSunday} onChange={e => updateCell(i, 'isSunday', String(e.target.checked))} style={{ accentColor: '#ef4444', cursor: 'pointer' }} /></td>
+                {rows.map((r, i) => (
+                  <tr key={r.day}>
+                    <td style={{ ...s.td(r.isSunday), fontWeight:700, color: r.isSunday ? '#ef4444' : '#d4a017', textAlign:'center' as const, fontSize:'0.72rem', minWidth:32 }}>{r.day}</td>
+                    {(['inTime','outTime','j953B_nt','j953B_ot','j956_nt','j956_ot','j935_nt','j935_ot','j959_nt','j959_ot','totalNT','totalOT'] as const).map(k => (
+                      <td key={k} style={{ ...s.td(r.isSunday), minWidth: k.includes('Time') ? 65 : 38 }}>
+                        <input style={s.inp} value={r[k] as string} onChange={e => upd(i, k, e.target.value)} />
+                      </td>
+                    ))}
+                    <td style={{ ...s.td(r.isSunday), minWidth:80 }}>
+                      <input style={{ ...s.inp, textAlign:'left' as const }} value={r.remarks} onChange={e => upd(i, 'remarks', e.target.value)} />
+                    </td>
+                    <td style={{ ...s.td(r.isSunday), textAlign:'center' as const, minWidth:32 }}>
+                      <input type="checkbox" checked={r.isSunday} onChange={e => upd(i, 'isSunday', e.target.checked)} style={{ accentColor:'#ef4444' }} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -243,10 +294,10 @@ export default function Home() {
         </div>
       </div>
 
-      <footer style={{ marginTop: '2.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between' }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--text-dim)' }}>MFIT Interior Decoration LLC</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--text-dim)' }}>Powered by Groq AI</span>
-      </footer>
-    </main>
+      <div style={{ marginTop:'2rem', paddingTop:'1rem', borderTop:'1px solid #222', display:'flex', justifyContent:'space-between', fontSize:'0.62rem', color:'#444' }}>
+        <span>MFIT Interior Decoration LLC</span>
+        <span>Powered by Groq AI</span>
+      </div>
+    </div>
   )
 }
